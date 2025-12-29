@@ -7,6 +7,7 @@
 #include <WinSock2.h>
 #include <iphlpapi.h>
 #include <WS2tcpip.h>
+#include <array>
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "iphlpapi.lib")
@@ -25,13 +26,21 @@
 
 namespace winrt::DeviceHandler::implementation
 {
+    // Per-tracker calibration state
+    struct PerTrackerState
+    {
+        Quaternion globalRotation{0, 0, 0, 1};
+        Quaternion localRotation{0, 0, 0, 1};
+        bool calibratingForward = false;
+        bool calibratingDown = false;
+    };
+
     struct TrackingHandler : TrackingHandlerT<TrackingHandler>
     {
         TrackingHandler() = default;
 
         void OnLoad();
         void Update();
-        void Signal() const;
 
         int32_t Initialize();
         int32_t Shutdown();
@@ -43,15 +52,28 @@ namespace winrt::DeviceHandler::implementation
         bool IsInitialized() const;
         int32_t StatusResult() const;
 
+        // Multi-tracker support
+        int32_t TrackerCount() const;
+        com_array<TrackerInfo> GetTrackerInfos() const;
+
+        // Per-tracker calibration
+        Quaternion GetGlobalRotation(int32_t trackerId) const;
+        void SetGlobalRotation(int32_t trackerId, const Quaternion& value);
+        Quaternion GetLocalRotation(int32_t trackerId) const;
+        void SetLocalRotation(int32_t trackerId, const Quaternion& value);
+
+        bool GetCalibratingForward(int32_t trackerId) const;
+        void SetCalibratingForward(int32_t trackerId, bool value);
+        bool GetCalibratingDown(int32_t trackerId) const;
+        void SetCalibratingDown(int32_t trackerId, bool value);
+
+        // Legacy single-device calibration (uses tracker 0)
         bool CalibratingForward() const;
         void CalibratingForward(bool value);
-
         bool CalibratingDown() const;
         void CalibratingDown(bool value);
-
         Quaternion GlobalRotation() const;
         void GlobalRotation(const Quaternion& value);
-
         Quaternion LocalRotation() const;
         void LocalRotation(const Quaternion& value);
 
@@ -61,12 +83,28 @@ namespace winrt::DeviceHandler::implementation
         event_token LogEvent(const Windows::Foundation::EventHandler<hstring>& handler);
         void LogEvent(const event_token& token) noexcept;
 
+        // Per-tracker pose calculation
+        Pose CalculatePoseForTracker(
+            int32_t trackerId,
+            const Pose& headsetPose,
+            const float& headsetYaw,
+            const Vector& globalOffset,
+            const Vector& deviceOffset,
+            const Vector& trackerOffset);
+
+        // Legacy single-device pose (uses tracker 0)
         Pose CalculatePose(
             const Pose& headsetPose,
             const float& headsetYaw,
             const Vector& globalOffset,
             const Vector& deviceOffset,
             const Vector& trackerOffset);
+
+        // Per-tracker haptics
+        void SignalTracker(int32_t trackerId) const;
+
+        // Legacy single-device signal (uses tracker 0)
+        void Signal() const;
 
     private:
         event<Windows::Foundation::EventHandler<hstring>> statusChangedEvent;
@@ -78,8 +116,6 @@ namespace winrt::DeviceHandler::implementation
         std::shared_ptr<std::future<void>> reloadThread;
 
         bool initialized = false;
-        bool calibratingForward = false;
-        bool calibratingDown = false;
 
         uint32_t devicePort = 6969;
 
@@ -90,8 +126,8 @@ namespace winrt::DeviceHandler::implementation
         InfoServer* infoServer;
         PositionPredictor posePredictor;
 
-        Quaternion globalRotation{};
-        Quaternion localRotation{};
+        // Per-tracker calibration states (up to MAX_TRACKERS)
+        std::array<PerTrackerState, MAX_TRACKERS> trackerStates;
 
         // How many retries have been made before marking
         // the connection dead (assume max 180 retries or 3 seconds)

@@ -11,6 +11,7 @@ bool InfoServer::respond_to_all_requests()
 	{
 		Socket.SendTo(addr, response_info.c_str(), response_info.length());
 	}
+	return true;
 }
 
 InfoServer::InfoServer(bool& _ret, std::function<void(std::wstring, int32_t)> loggerFunction) :
@@ -18,11 +19,24 @@ InfoServer::InfoServer(bool& _ret, std::function<void(std::wstring, int32_t)> lo
 {
 	buff = static_cast<char*>(malloc(MAX_BUFF_SIZE));
 	_ret = Socket.Bind(&INFO_PORT);
+	update_response_info();
 }
 
-void InfoServer::add_tracker()
+void InfoServer::set_tracker_count(int count)
 {
-	response_info = std::to_string(port_no) + ":Default\n";
+	trackerCount = count;
+	update_response_info();
+}
+
+void InfoServer::update_response_info()
+{
+	// Build response with all available tracker slots
+	// Format: "port:name\n" for each tracker
+	response_info = "";
+	for (int i = 0; i < trackerCount; i++)
+	{
+		response_info += std::to_string(port_no) + ":Tracker " + std::to_string(i) + "\n";
+	}
 }
 
 void InfoServer::tick()

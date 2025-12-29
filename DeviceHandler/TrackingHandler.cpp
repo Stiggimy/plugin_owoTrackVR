@@ -48,6 +48,12 @@ namespace winrt::DeviceHandler::implementation
 
         // Add localhost if empty
         if (ipVector.empty()) ipVector.push_back(L"127.0.0.1");
+
+        // Initialize per-tracker states
+        for (int i = 0; i < MAX_TRACKERS; i++)
+        {
+            trackerStates[i] = PerTrackerState();
+        }
     }
 
     void TrackingHandler::Update()
@@ -76,7 +82,18 @@ namespace winrt::DeviceHandler::implementation
                 Log(std::format(L"Error message: {}", to_hstring(e.what())), 2);
             }
 
-            if (!dataServer->isDataAvailable())
+            // Check if any tracker has data
+            bool anyTrackerHasData = false;
+            for (int i = 0; i < dataServer->getActiveTrackerCount(); i++)
+            {
+                if (dataServer->isDataAvailable(i))
+                {
+                    anyTrackerHasData = true;
+                    break;
+                }
+            }
+
+            if (!anyTrackerHasData && dataServer->getActiveTrackerCount() > 0)
             {
                 // 100/s => 1s timeout
                 if (eRetries >= 100)
@@ -84,10 +101,18 @@ namespace winrt::DeviceHandler::implementation
                     eRetries = 0; // Reset and backup that status
                     const auto previousStatus = statusResult;
 
-                    statusResult =
-                        dataServer->isConnectionAlive()
-                            ? R_E_NO_DATA
-                            : R_E_CON_DEAD;
+                    // Check if any tracker is connected
+                    bool anyConnected = false;
+                    for (int i = 0; i < dataServer->getActiveTrackerCount(); i++)
+                    {
+                        if (dataServer->isConnectionAlive(i))
+                        {
+                            anyConnected = true;
+                            break;
+                        }
+                    }
+
+                    statusResult = anyConnected ? R_E_NO_DATA : R_E_CON_DEAD;
 
                     // Notify about the change
                     if (statusResult != previousStatus && (reloadThread.get() == nullptr ||
@@ -101,7 +126,7 @@ namespace winrt::DeviceHandler::implementation
                 }
                 else eRetries++;
             }
-            else
+            else if (anyTrackerHasData)
             {
                 const auto previousStatus = statusResult;
                 statusResult = S_OK; // All fine now!
@@ -116,8 +141,14 @@ namespace winrt::DeviceHandler::implementation
 
     void TrackingHandler::Signal() const
     {
+        SignalTracker(0);
+    }
+
+    void TrackingHandler::SignalTracker(int32_t trackerId) const
+    {
         if (!initialized || statusResult != S_OK) return;
-        dataServer->buzz(0.7, 100.0, 0.5);
+        if (trackerId < 0 || trackerId >= dataServer->getActiveTrackerCount()) return;
+        dataServer->buzz(trackerId, 0.7f, 100.0f, 0.5f);
     }
 
     int32_t TrackingHandler::Initialize()
@@ -140,7 +171,7 @@ namespace winrt::DeviceHandler::implementation
             }
 
             infoServer->set_port_no(dataServer->get_port());
-            infoServer->add_tracker();
+            infoServer->set_tracker_count(MAX_TRACKERS);
 
             // Start listening
             try
@@ -170,8 +201,6 @@ namespace winrt::DeviceHandler::implementation
             statusResult != R_E_PORTS_TAKEN)
         {
             initialized = true;
-            calibratingForward = false;
-            calibratingDown = false;
             return S_OK; // All fine now!
         }
 
@@ -210,44 +239,118 @@ namespace winrt::DeviceHandler::implementation
         return statusResult;
     }
 
+    int32_t TrackingHandler::TrackerCount() const
+    {
+        if (!initialized || dataServer == nullptr) return 0;
+        return dataServer->getActiveTrackerCount();
+    }
+
+    com_array<TrackerInfo> TrackingHandler::GetTrackerInfos() const
+    {
+        std::vector<TrackerInfo> infos;
+        if (initialized && dataServer != nullptr)
+        {
+            for (int i = 0; i < dataServer->getActiveTrackerCount(); i++)
+            {
+                TrackerInfo info;
+                info.Id = i;
+                info.IsConnected = dataServer->isTrackerConnected(i);
+                infos.push_back(info);
+            }
+        }
+        return com_array<TrackerInfo>(infos);
+    }
+
+    // Per-tracker calibration getters/setters
+    Quaternion TrackingHandler::GetGlobalRotation(int32_t trackerId) const
+    {
+        if (trackerId < 0 || trackerId >= MAX_TRACKERS)
+            return Quaternion{0, 0, 0, 1};
+        return trackerStates[trackerId].globalRotation;
+    }
+
+    void TrackingHandler::SetGlobalRotation(int32_t trackerId, const Quaternion& value)
+    {
+        if (trackerId < 0 || trackerId >= MAX_TRACKERS) return;
+        trackerStates[trackerId].globalRotation = value;
+    }
+
+    Quaternion TrackingHandler::GetLocalRotation(int32_t trackerId) const
+    {
+        if (trackerId < 0 || trackerId >= MAX_TRACKERS)
+            return Quaternion{0, 0, 0, 1};
+        return trackerStates[trackerId].localRotation;
+    }
+
+    void TrackingHandler::SetLocalRotation(int32_t trackerId, const Quaternion& value)
+    {
+        if (trackerId < 0 || trackerId >= MAX_TRACKERS) return;
+        trackerStates[trackerId].localRotation = value;
+    }
+
+    bool TrackingHandler::GetCalibratingForward(int32_t trackerId) const
+    {
+        if (trackerId < 0 || trackerId >= MAX_TRACKERS) return false;
+        return trackerStates[trackerId].calibratingForward;
+    }
+
+    void TrackingHandler::SetCalibratingForward(int32_t trackerId, bool value)
+    {
+        if (trackerId < 0 || trackerId >= MAX_TRACKERS) return;
+        trackerStates[trackerId].calibratingForward = value;
+    }
+
+    bool TrackingHandler::GetCalibratingDown(int32_t trackerId) const
+    {
+        if (trackerId < 0 || trackerId >= MAX_TRACKERS) return false;
+        return trackerStates[trackerId].calibratingDown;
+    }
+
+    void TrackingHandler::SetCalibratingDown(int32_t trackerId, bool value)
+    {
+        if (trackerId < 0 || trackerId >= MAX_TRACKERS) return;
+        trackerStates[trackerId].calibratingDown = value;
+    }
+
+    // Legacy single-device calibration (uses tracker 0)
     bool TrackingHandler::CalibratingForward() const
     {
-        return calibratingForward;
+        return GetCalibratingForward(0);
     }
 
     void TrackingHandler::CalibratingForward(bool value)
     {
-        calibratingForward = value;
+        SetCalibratingForward(0, value);
     }
 
     bool TrackingHandler::CalibratingDown() const
     {
-        return calibratingDown;
+        return GetCalibratingDown(0);
     }
 
     void TrackingHandler::CalibratingDown(bool value)
     {
-        calibratingDown = value;
+        SetCalibratingDown(0, value);
     }
 
     Quaternion TrackingHandler::GlobalRotation() const
     {
-        return globalRotation;
+        return GetGlobalRotation(0);
     }
 
     void TrackingHandler::GlobalRotation(const Quaternion& value)
     {
-        globalRotation = value;
+        SetGlobalRotation(0, value);
     }
 
     Quaternion TrackingHandler::LocalRotation() const
     {
-        return localRotation;
+        return GetLocalRotation(0);
     }
 
     void TrackingHandler::LocalRotation(const Quaternion& value)
     {
-        localRotation = value;
+        SetLocalRotation(0, value);
     }
 
     event_token TrackingHandler::StatusChanged(
@@ -279,12 +382,26 @@ namespace winrt::DeviceHandler::implementation
         const Vector& deviceOffset,
         const Vector& trackerOffset)
     {
+        return CalculatePoseForTracker(0, headsetPose, headsetYaw, globalOffset, deviceOffset, trackerOffset);
+    }
+
+    Pose TrackingHandler::CalculatePoseForTracker(
+        int32_t trackerId,
+        const Pose& headsetPose,
+        const float& headsetYaw,
+        const Vector& globalOffset,
+        const Vector& deviceOffset,
+        const Vector& trackerOffset)
+    {
         // Make sure that we're running correctly
-        if (!initialized || statusResult != S_OK)
+        if (!initialized || statusResult != S_OK || trackerId < 0 || trackerId >= dataServer->getActiveTrackerCount())
             return {
                 Vector{0, 0, 0},
                 Quaternion{0, 0, 0, 1}
             };
+
+        // Get the tracker's calibration state
+        auto& trackerState = trackerStates[trackerId];
 
         /* Prepare for the position calculations */
 
@@ -312,7 +429,12 @@ namespace winrt::DeviceHandler::implementation
         // Acceleration is not used as of now
         // double* acceleration = m_data_server->getAccel();
 
-        const double* p_remote_rotation = dataServer->getRotationQuaternion();
+        const double* p_remote_rotation = dataServer->getRotationQuaternion(trackerId);
+        if (p_remote_rotation == nullptr)
+            return {
+                Vector{0, 0, 0},
+                Quaternion{0, 0, 0, 1}
+            };
 
         auto p_remote_quaternion = Quat(
             p_remote_rotation[0], p_remote_rotation[1],
@@ -321,9 +443,9 @@ namespace winrt::DeviceHandler::implementation
         p_remote_quaternion =
             Quat(Vector3(1, 0, 0), -Math_PI / 2.0) * p_remote_quaternion;
 
-        if (calibratingForward)
+        if (trackerState.calibratingForward)
         {
-            globalRotation = Quat(Vector3(
+            trackerState.globalRotation = Quat(Vector3(
                 0, get_yaw(p_remote_quaternion) -
                 get_yaw(offset_basis, Vector3(0, 0, -1)), 0)).toWinRT();
 
@@ -333,14 +455,14 @@ namespace winrt::DeviceHandler::implementation
             offset_local_tracker = Vector3(0, 0, 0);
         }
 
-        p_remote_quaternion = Quat(globalRotation) * p_remote_quaternion;
+        p_remote_quaternion = Quat(trackerState.globalRotation) * p_remote_quaternion;
 
-        if (calibratingDown)
-            localRotation =
+        if (trackerState.calibratingDown)
+            trackerState.localRotation =
             (Quat(p_remote_quaternion.inverse().get_euler_yxz()) *
                 Quat(Vector3(0, 1, 0), -headsetYaw)).toWinRT();
 
-        p_remote_quaternion = p_remote_quaternion * Quat(localRotation);
+        p_remote_quaternion = p_remote_quaternion * Quat(trackerState.localRotation);
         pose.Orientation = p_remote_quaternion.toWinRT();
 
         // Angular velocity is not used as of now

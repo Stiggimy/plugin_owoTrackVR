@@ -21,6 +21,12 @@ namespace DeviceHandler
 		Quaternion Orientation;
 	};
 
+	struct TrackerInfo
+	{
+		Int32 Id;
+		Boolean IsConnected;
+	};
+
 	[default_interface]
 	runtimeclass TrackingHandler
 	{
@@ -28,7 +34,6 @@ namespace DeviceHandler
 
 		void OnLoad(); // Prepare plugin for usage
 		void Update(); // Prepare stuff for update
-		void Signal(); // Send a haptic signal now
 
 		Int32 Initialize(); // Initialize owoTrack
 		Int32 Shutdown();   // Disconnect, cleanup
@@ -38,9 +43,24 @@ namespace DeviceHandler
 		Boolean IsInitialized { get; }; // Init { get; }
 		Int32 StatusResult { get; }; // Status { get; }
 
+		// Multi-tracker support
+		Int32 TrackerCount { get; }; // Number of connected trackers
+		TrackerInfo[] GetTrackerInfos(); // Get all tracker statuses
+
+		// Per-tracker calibration
+		Quaternion GetGlobalRotation(Int32 trackerId);
+		void SetGlobalRotation(Int32 trackerId, Quaternion value);
+		Quaternion GetLocalRotation(Int32 trackerId);
+		void SetLocalRotation(Int32 trackerId, Quaternion value);
+
+		Boolean GetCalibratingForward(Int32 trackerId);
+		void SetCalibratingForward(Int32 trackerId, Boolean value);
+		Boolean GetCalibratingDown(Int32 trackerId);
+		void SetCalibratingDown(Int32 trackerId, Boolean value);
+
+		// Legacy single-device calibration (for backward compatibility, uses tracker 0)
 		Boolean CalibratingForward; // FWD calibration flag
 		Boolean CalibratingDown;	// DWN calibration flag
-
 		Quaternion GlobalRotation; // VR HMD offset { get; set; }
 		Quaternion LocalRotation;  // Device offset { get; set; }
 
@@ -51,7 +71,17 @@ namespace DeviceHandler
 		// Event handler: log a stringized message
 		event Windows.Foundation.EventHandler<String> LogEvent;
 
-		// Get the caluclated pose (if valid)
+		// Per-tracker pose calculation
+		Pose CalculatePoseForTracker(
+			Int32 trackerId,
+			Pose headsetPose,
+			Single headsetYaw,
+			Vector globalOffset,
+			Vector deviceOffset,
+			Vector trackerOffset
+		);
+
+		// Legacy single-device pose (for backward compatibility, uses tracker 0)
 		Pose CalculatePose(
 			Pose headsetPose,
 			Single headsetYaw,
@@ -59,5 +89,11 @@ namespace DeviceHandler
 			Vector deviceOffset,
 			Vector trackerOffset
 		);
+
+		// Per-tracker haptics
+		void SignalTracker(Int32 trackerId);
+
+		// Legacy single-device signal (for backward compatibility, uses tracker 0)
+		void Signal();
 	}
 }

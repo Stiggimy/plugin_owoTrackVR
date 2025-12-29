@@ -2,23 +2,13 @@
 #include "NetworkedDeviceQuatServer.h"
 #include <stdlib.h>
 
-bool NetworkedDeviceQuatServer::receive_packet_id(message_id_t new_id)
-{
-	if ((new_id > current_packet_id) || (new_id < 5))
-	{
-		current_packet_id = new_id;
-		return true;
-	}
-	return false;
-}
-
-void NetworkedDeviceQuatServer::handle_doubles_packet(unsigned char* packet, double* into, int num_doubles)
+void NetworkedDeviceQuatServer::handle_doubles_packet(unsigned char* packet, double* into, int num_doubles, TrackerData& tracker)
 {
 	packet += sizeof(message_header_type_t);
 
 	const message_id_t id = convert_chars<message_id_t>(packet);
 	packet += sizeof(message_id_t);
-	if (!receive_packet_id(id)) return;
+	if (!tracker.receive_packet_id(id)) return;
 
 	for (int i = 0; i < num_doubles; i++)
 	{
@@ -27,56 +17,70 @@ void NetworkedDeviceQuatServer::handle_doubles_packet(unsigned char* packet, dou
 		into[i] = static_cast<double>(data);
 	}
 
-	isNewDataAvailable = true;
+	tracker.isNewDataAvailable = true;
 }
 
 
-void NetworkedDeviceQuatServer::handle_gyro_packet(unsigned char* packet)
+void NetworkedDeviceQuatServer::handle_gyro_packet(unsigned char* packet, int trackerId)
 {
-	handle_doubles_packet(packet, gyro_buffer, 3);
+	if (trackerId < 0 || trackerId >= MAX_TRACKERS) return;
+	handle_doubles_packet(packet, trackers[trackerId].gyro_buffer, 3, trackers[trackerId]);
 }
 
-void NetworkedDeviceQuatServer::handle_rotation_packet(unsigned char* packet)
+void NetworkedDeviceQuatServer::handle_rotation_packet(unsigned char* packet, int trackerId)
 {
-	handle_doubles_packet(packet, quat_buffer, 4);
+	if (trackerId < 0 || trackerId >= MAX_TRACKERS) return;
+	handle_doubles_packet(packet, trackers[trackerId].quat_buffer, 4, trackers[trackerId]);
 }
 
-void NetworkedDeviceQuatServer::handle_accel_packet(unsigned char* packet)
+void NetworkedDeviceQuatServer::handle_accel_packet(unsigned char* packet, int trackerId)
 {
-	handle_doubles_packet(packet, accel_buffer, 3);
+	if (trackerId < 0 || trackerId >= MAX_TRACKERS) return;
+	handle_doubles_packet(packet, trackers[trackerId].accel_buffer, 3, trackers[trackerId]);
 }
 
 
-bool NetworkedDeviceQuatServer::isDataAvailable()
+int NetworkedDeviceQuatServer::getActiveTrackerCount()
 {
-	const bool was_available = isNewDataAvailable;
-	isNewDataAvailable = false;
+	return activeTrackerCount;
+}
+
+bool NetworkedDeviceQuatServer::isTrackerConnected(int trackerId)
+{
+	if (trackerId < 0 || trackerId >= MAX_TRACKERS) return false;
+	return trackers[trackerId].isConnected;
+}
+
+bool NetworkedDeviceQuatServer::isDataAvailable(int trackerId)
+{
+	if (trackerId < 0 || trackerId >= MAX_TRACKERS) return false;
+	const bool was_available = trackers[trackerId].isNewDataAvailable;
+	trackers[trackerId].isNewDataAvailable = false;
 	return was_available;
 }
 
-double* NetworkedDeviceQuatServer::getRotationQuaternion()
+double* NetworkedDeviceQuatServer::getRotationQuaternion(int trackerId)
 {
-	return quat_buffer;
+	if (trackerId < 0 || trackerId >= MAX_TRACKERS) return nullptr;
+	return trackers[trackerId].quat_buffer;
 }
 
-double* NetworkedDeviceQuatServer::getGyroscope()
+double* NetworkedDeviceQuatServer::getGyroscope(int trackerId)
 {
-	return gyro_buffer;
+	if (trackerId < 0 || trackerId >= MAX_TRACKERS) return nullptr;
+	return trackers[trackerId].gyro_buffer;
 }
 
-double* NetworkedDeviceQuatServer::getAccel()
+double* NetworkedDeviceQuatServer::getAccel(int trackerId)
 {
-	return accel_buffer;
+	if (trackerId < 0 || trackerId >= MAX_TRACKERS) return nullptr;
+	return trackers[trackerId].accel_buffer;
 }
 
 #define HELLOMESSAGE (" Hey OVR =D 5")
 
 NetworkedDeviceQuatServer::NetworkedDeviceQuatServer()
 {
-	quat_buffer = static_cast<double*>(malloc(sizeof(double) * 4));
-	gyro_buffer = static_cast<double*>(malloc(sizeof(double) * 3));
-	accel_buffer = static_cast<double*>(malloc(sizeof(double) * 3));
-
 	buff_hello = static_cast<char*>(malloc(sizeof(HELLOMESSAGE)));
 
 	const auto msg = HELLOMESSAGE;
@@ -87,4 +91,10 @@ NetworkedDeviceQuatServer::NetworkedDeviceQuatServer()
 	buff_hello[0] = MSG_HANDSHAKE;
 
 	buff_hello_len = sizeof(HELLOMESSAGE);
+
+	// Initialize all tracker data
+	for (int i = 0; i < MAX_TRACKERS; i++)
+	{
+		trackers[i] = TrackerData();
+	}
 }
