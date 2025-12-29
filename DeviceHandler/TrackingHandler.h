@@ -124,7 +124,7 @@ namespace winrt::DeviceHandler::implementation
 
         UDPDeviceQuatServer* dataServer;
         InfoServer* infoServer;
-        PositionPredictor posePredictor;
+        std::array<PositionPredictor, MAX_TRACKERS> posePredictors;
 
         // Per-tracker calibration states (up to MAX_TRACKERS)
         std::array<PerTrackerState, MAX_TRACKERS> trackerStates;

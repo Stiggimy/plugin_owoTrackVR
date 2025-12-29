@@ -18,10 +18,10 @@ inline Vector3 minimize_vector(Vector3 v)
 }
 
 
-Vector3 PositionPredictor::predict(DeviceQuatServer& serv, Basis& basis)
+Vector3 PositionPredictor::predict(DeviceQuatServer& serv, int trackerId, Basis& basis)
 {
-	const double* gyro_a = serv.getGyroscope();
-	const double* accel_a = serv.getAccel();
+	const double* gyro_a = serv.getGyroscope(trackerId);
+	const double* accel_a = serv.getAccel(trackerId);
 	gyro = gyro.lerp(Vector3(gyro_a[0], gyro_a[1], gyro_a[2]), 0.1);
 	acceleration = acceleration.lerp(Vector3(accel_a[0], accel_a[1], accel_a[2]), 0.4);
 

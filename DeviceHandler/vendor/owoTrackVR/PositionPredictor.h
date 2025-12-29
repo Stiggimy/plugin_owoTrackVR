@@ -13,5 +13,5 @@ private:
 	Vector3 acceleration = Vector3();
 
 public:
-	Vector3 predict(DeviceQuatServer& serv, Basis& basis);
+	Vector3 predict(DeviceQuatServer& serv, int trackerId, Basis& basis);
 };
