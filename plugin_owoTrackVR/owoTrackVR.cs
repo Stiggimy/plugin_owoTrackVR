@@ -86,19 +86,9 @@ public class OwoTrack : ITrackingDevice
     };
 
     // Role to TrackedJointType mapping
-    private static TrackedJointType RoleToJointType(TrackerRole role) => role switch
-    {
-        TrackerRole.Waist => TrackedJointType.JointSpineWaist,
-        TrackerRole.Chest => TrackedJointType.JointSpineChest,
-        TrackerRole.LeftFoot => TrackedJointType.JointFootLeft,
-        TrackerRole.RightFoot => TrackedJointType.JointFootRight,
-        TrackerRole.LeftKnee => TrackedJointType.JointKneeLeft,
-        TrackerRole.RightKnee => TrackedJointType.JointKneeRight,
-        TrackerRole.LeftElbow => TrackedJointType.JointElbowLeft,
-        TrackerRole.RightElbow => TrackedJointType.JointElbowRight,
-        TrackerRole.Manual => TrackedJointType.JointManual,
-        _ => TrackedJointType.JointManual
-    };
+    // Using JointManual for all - user assigns body part in Amethyst's joint assignment UI
+    // This provides maximum flexibility and avoids enum compatibility issues
+    private static TrackedJointType RoleToJointType(TrackerRole role) => TrackedJointType.JointManual;
 
     public OwoTrack()
     {
@@ -438,9 +428,21 @@ public class OwoTrack : ITrackingDevice
             {
                 Content = "Calibrate",
                 FontWeight = FontWeights.SemiBold,
-                Margin = new Thickness { Right = 10 }
+                Margin = new Thickness { Right = 5 }
             };
             calibrateButton.Click += async (s, e) => await CalibrateTrackerAsync(tid);
+            
+            var identifyButton = new Button
+            {
+                Content = "📳",
+                Margin = new Thickness { Right = 10 }
+            };
+            ToolTipService.SetToolTip(identifyButton, "Identify (vibrate)");
+            identifyButton.Click += (s, e) =>
+            {
+                Handler.SignalTracker(tid);
+                Host.PlayAppSound(SoundType.Invoke);
+            };
             
             var heightLabel = new TextBlock
             {
@@ -473,7 +475,7 @@ public class OwoTrack : ITrackingDevice
             {
                 Orientation = Orientation.Horizontal,
                 Margin = new Thickness { Bottom = 8 },
-                Children = { label, roleSelector, calibrateButton, heightLabel, heightBox }
+                Children = { label, roleSelector, identifyButton, calibrateButton, heightLabel, heightBox }
             };
             
             TrackersPanel.Children.Add(row);
