@@ -298,6 +298,11 @@ public class OwoTrack : ITrackingDevice
 
         // Mark the plugin as loaded
         PluginLoaded = true;
+        
+        // CRITICAL: Build initial joints (including placeholder if no trackers)
+        // This must be called to ensure Amethyst has at least one joint at startup
+        RebuildTrackedJoints();
+        
         UpdateSettingsInterface(true);
     }
 
