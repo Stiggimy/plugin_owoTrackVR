@@ -86,9 +86,21 @@ public class OwoTrack : ITrackingDevice
     };
 
     // Role to TrackedJointType mapping
-    // Using JointManual for all - user assigns body part in Amethyst's joint assignment UI
-    // This provides maximum flexibility and avoids enum compatibility issues
-    private static TrackedJointType RoleToJointType(TrackerRole role) => TrackedJointType.JointManual;
+    private static TrackedJointType RoleToJointType(TrackerRole role)
+    {
+        return role switch
+        {
+            TrackerRole.Waist => TrackedJointType.JointSpineBase,
+            TrackerRole.Chest => TrackedJointType.JointSpineMid,
+            TrackerRole.LeftFoot => TrackedJointType.JointFootLeft,
+            TrackerRole.RightFoot => TrackedJointType.JointFootRight,
+            TrackerRole.LeftKnee => TrackedJointType.JointKneeLeft,
+            TrackerRole.RightKnee => TrackedJointType.JointKneeRight,
+            TrackerRole.LeftElbow => TrackedJointType.JointElbowLeft,
+            TrackerRole.RightElbow => TrackedJointType.JointElbowRight,
+            _ => TrackedJointType.JointManual
+        };
+    }
 
     public OwoTrack()
     {
