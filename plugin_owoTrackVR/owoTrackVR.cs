@@ -239,6 +239,7 @@ public class OwoTrack : ITrackingDevice
         TrackedJoints.Clear();
         _jointToTrackerMap.Clear();
         
+        int enabledCount = 0;
         for (int trackerId = 0; trackerId < Handler.TrackerCount; trackerId++)
         {
             var settings = GetOrCreateTrackerSettings(trackerId);
@@ -258,6 +259,20 @@ public class OwoTrack : ITrackingDevice
             // Initialize handler with saved calibration
             Handler.SetGlobalRotation(trackerId, settings.GlobalRotation.ToWin());
             Handler.SetLocalRotation(trackerId, settings.LocalRotation.ToWin());
+            enabledCount++;
+        }
+        
+        // Always ensure at least one joint exists (Amethyst requires this)
+        // This placeholder is used when no trackers are connected yet
+        if (TrackedJoints.Count == 0)
+        {
+            TrackedJoints.Add(new TrackedJoint
+            {
+                Name = "owoTrack (waiting for device...)",
+                Role = TrackedJointType.JointManual
+            });
+            // Map joint index 0 to tracker ID -1 (placeholder)
+            _jointToTrackerMap[0] = -1;
         }
         
         // Update UI if needed
@@ -617,6 +632,9 @@ public class OwoTrack : ITrackingDevice
         {
             if (!_jointToTrackerMap.TryGetValue(jointIndex, out var trackerId)) continue;
             
+            // Skip placeholder joints (no real tracker connected)
+            if (trackerId < 0) continue;
+            
             var trackerOffset = GetTrackerOffset(trackerId);
             
             // Get the computed pose for this tracker
@@ -642,7 +660,7 @@ public class OwoTrack : ITrackingDevice
     public void SignalJoint(int jointId)
     {
         // Send a buzz signal to the corresponding tracker
-        if (_jointToTrackerMap.TryGetValue(jointId, out var trackerId))
+        if (_jointToTrackerMap.TryGetValue(jointId, out var trackerId) && trackerId >= 0)
         {
             Handler.SignalTracker(trackerId);
         }
