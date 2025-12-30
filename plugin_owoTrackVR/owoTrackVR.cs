@@ -31,7 +31,7 @@ namespace plugin_OwoTrack;
 /// </summary>
 public enum TrackerRole
 {
-    Disabled,
+    Manual = 0, // Default - User assigns in Amethyst (must be first to be default)
     Waist,
     Chest,
     LeftFoot,
@@ -40,7 +40,7 @@ public enum TrackerRole
     RightKnee,
     LeftElbow,
     RightElbow,
-    Manual // User assigns in Amethyst
+    Disabled // Last so new trackers default to Manual, not Disabled
 }
 
 [Export(typeof(ITrackingDevice))]
