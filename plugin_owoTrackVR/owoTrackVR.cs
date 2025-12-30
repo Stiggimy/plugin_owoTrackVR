@@ -8,6 +8,7 @@ using System.Numerics;
 using System.Threading.Tasks;
 using System.Timers;
 using System.Collections.Generic;
+using System.Linq;
 using Amethyst.Plugins.Contract;
 using DeviceHandler;
 using Microsoft.UI.Text;
@@ -24,11 +25,29 @@ using Quaternion = System.Numerics.Quaternion;
 
 namespace plugin_OwoTrack;
 
+/// <summary>
+/// Role options for each owoTrack device.
+/// Disabled means the tracker won't create a joint in Amethyst.
+/// </summary>
+public enum TrackerRole
+{
+    Disabled,
+    Waist,
+    Chest,
+    LeftFoot,
+    RightFoot,
+    LeftKnee,
+    RightKnee,
+    LeftElbow,
+    RightElbow,
+    Manual // User assigns in Amethyst
+}
+
 [Export(typeof(ITrackingDevice))]
 [ExportMetadata("Name", "owoTrackVR")]
 [ExportMetadata("Guid", "K2VRTEAM-AME2-APII-DVCE-DVCEOWOTRACK")]
 [ExportMetadata("Publisher", "K2VR Team")]
-[ExportMetadata("Version", "2.0.0.0")]
+[ExportMetadata("Version", "2.1.0.0")]
 [ExportMetadata("Website", "https://github.com/KinectToVR/plugin_owoTrackVR")]
 [ExportMetadata("DependencyLink", "https://docs.k2vr.tech/{0}/owo/about/")]
 [ExportMetadata("CoreSetupData", typeof(SetupData))]
@@ -41,14 +60,45 @@ public class OwoTrack : ITrackingDevice
     // Per-tracker settings
     private class TrackerSettings
     {
+        public TrackerRole Role { get; set; } = TrackerRole.Disabled;
         public uint TrackerHeightOffset { get; set; } = 75;
         public Quaternion GlobalRotation { get; set; } = Quaternion.Identity;
         public Quaternion LocalRotation { get; set; } = Quaternion.Identity;
     }
     private Dictionary<int, TrackerSettings> _trackerSettings = new();
 
-    // Currently selected tracker in UI
-    private int _selectedTrackerId = 0;
+    // Maps TrackedJoint index to tracker ID
+    private Dictionary<int, int> _jointToTrackerMap = new();
+
+    // Role display names for UI
+    private static readonly Dictionary<TrackerRole, string> RoleDisplayNames = new()
+    {
+        { TrackerRole.Disabled, "Disabled" },
+        { TrackerRole.Waist, "Waist" },
+        { TrackerRole.Chest, "Chest" },
+        { TrackerRole.LeftFoot, "Left Foot" },
+        { TrackerRole.RightFoot, "Right Foot" },
+        { TrackerRole.LeftKnee, "Left Knee" },
+        { TrackerRole.RightKnee, "Right Knee" },
+        { TrackerRole.LeftElbow, "Left Elbow" },
+        { TrackerRole.RightElbow, "Right Elbow" },
+        { TrackerRole.Manual, "Manual" }
+    };
+
+    // Role to TrackedJointType mapping
+    private static TrackedJointType RoleToJointType(TrackerRole role) => role switch
+    {
+        TrackerRole.Waist => TrackedJointType.JointSpineWaist,
+        TrackerRole.Chest => TrackedJointType.JointSpineChest,
+        TrackerRole.LeftFoot => TrackedJointType.JointFootLeft,
+        TrackerRole.RightFoot => TrackedJointType.JointFootRight,
+        TrackerRole.LeftKnee => TrackedJointType.JointKneeLeft,
+        TrackerRole.RightKnee => TrackedJointType.JointKneeRight,
+        TrackerRole.LeftElbow => TrackedJointType.JointElbowLeft,
+        TrackerRole.RightElbow => TrackedJointType.JointElbowRight,
+        TrackerRole.Manual => TrackedJointType.JointManual,
+        _ => TrackedJointType.JointManual
+    };
 
     public OwoTrack()
     {
@@ -114,14 +164,14 @@ public class OwoTrack : ITrackingDevice
         {
             (int)HandlerStatus.ServiceNotStarted => Host.RequestLocalizedString("/Plugins/OWO/Statuses/NotStarted"),
             (int)HandlerStatus.ServiceSuccess => Host.RequestLocalizedString("/Plugins/OWO/Statuses/Success") + 
-                $" ({Handler.TrackerCount} tracker{(Handler.TrackerCount != 1 ? "s" : "")})",
+                $" ({Handler.TrackerCount} device{(Handler.TrackerCount != 1 ? "s" : "")}, {TrackedJoints.Count} active)",
             (int)HandlerStatus.ConnectionDead => Host.RequestLocalizedString("/Plugins/OWO/Statuses/ConnectionDead"),
             (int)HandlerStatus.ErrorNoData => Host.RequestLocalizedString("/Plugins/OWO/Statuses/NoData"),
             (int)HandlerStatus.ErrorInitFailed => Host.RequestLocalizedString("/Plugins/OWO/Statuses/InitFailure"),
-            (int)HandlerStatus.ErrorPortsTaken => Host.RequestLocalizedString("/Plugins/OWO/Statuses/NoPorts"),
-            _ => $"Undefined: {DeviceStatus}\nE_UNDEFINED\nSomething weird has happened, though we can't tell what."
+            (int)HandlerStatus.ErrorPortsTaken => Host.RequestLocalizedString("/Plugins/OWO/Statuses/PortsTaken"),
+            _ => $"Status: {DeviceStatus}"
         }
-        : $"Undefined: {DeviceStatus}\nE_UNDEFINED\nSomething weird has happened, though we can't tell what.";
+        : Host?.RequestLocalizedString("/Plugins/OWO/Statuses/NotStarted") ?? "Not Started";
 
     private TrackerSettings GetOrCreateTrackerSettings(int trackerId)
     {
@@ -129,6 +179,7 @@ public class OwoTrack : ITrackingDevice
         {
             _trackerSettings[trackerId] = new TrackerSettings
             {
+                Role = (TrackerRole)Host.PluginSettings.GetSetting($"Tracker{trackerId}_Role", (int)TrackerRole.Disabled),
                 TrackerHeightOffset = Host.PluginSettings.GetSetting($"Tracker{trackerId}_TrackerHeightOffset", 75U),
                 GlobalRotation = Host.PluginSettings.GetSetting($"Tracker{trackerId}_GlobalRotation", Quaternion.Identity),
                 LocalRotation = Host.PluginSettings.GetSetting($"Tracker{trackerId}_LocalRotation", Quaternion.Identity)
@@ -146,6 +197,7 @@ public class OwoTrack : ITrackingDevice
     private void SaveTrackerSettings(int trackerId)
     {
         var settings = GetOrCreateTrackerSettings(trackerId);
+        Host.PluginSettings.SetSetting($"Tracker{trackerId}_Role", (int)settings.Role);
         Host.PluginSettings.SetSetting($"Tracker{trackerId}_TrackerHeightOffset", settings.TrackerHeightOffset);
         Host.PluginSettings.SetSetting($"Tracker{trackerId}_GlobalRotation", settings.GlobalRotation);
         Host.PluginSettings.SetSetting($"Tracker{trackerId}_LocalRotation", settings.LocalRotation);
@@ -165,6 +217,7 @@ public class OwoTrack : ITrackingDevice
             Host.PluginSettings.SetSetting("Tracker0_GlobalRotation", oldGlobalRotation.Value);
             Host.PluginSettings.SetSetting("Tracker0_LocalRotation", oldLocal);
             Host.PluginSettings.SetSetting("Tracker0_TrackerHeightOffset", oldHeight);
+            Host.PluginSettings.SetSetting("Tracker0_Role", (int)TrackerRole.Waist); // Default first tracker to Waist
             
             // Clear old settings by setting to default (can't actually delete)
             Host.PluginSettings.SetSetting("GlobalRotation", Quaternion.Identity);
@@ -181,37 +234,44 @@ public class OwoTrack : ITrackingDevice
         if (!PluginLoaded || !Handler.IsInitialized) return;
         
         var currentCount = Handler.TrackerCount;
+        
+        // Rebuild joints if tracker count changed or we need to refresh
         if (currentCount != _lastTrackerCount)
         {
             Host.Log($"Tracker count changed from {_lastTrackerCount} to {currentCount}");
-            
-            // Handle removed trackers
-            while (TrackedJoints.Count > currentCount)
-            {
-                TrackedJoints.RemoveAt(TrackedJoints.Count - 1);
-            }
-            
-            // Handle added trackers
-            while (TrackedJoints.Count < currentCount)
-            {
-                var trackerId = TrackedJoints.Count;
-                TrackedJoints.Add(new TrackedJoint
-                {
-                    Name = $"owoTrack {trackerId}",
-                    Role = TrackedJointType.JointManual
-                });
-                
-                // Initialize settings for new tracker
-                var settings = GetOrCreateTrackerSettings(trackerId);
-                Handler.SetGlobalRotation(trackerId, settings.GlobalRotation.ToWin());
-                Handler.SetLocalRotation(trackerId, settings.LocalRotation.ToWin());
-            }
-            
             _lastTrackerCount = currentCount;
-            
-            // Update UI if needed
-            UpdateTrackerSelector();
+            RebuildTrackedJoints();
         }
+    }
+
+    private void RebuildTrackedJoints()
+    {
+        TrackedJoints.Clear();
+        _jointToTrackerMap.Clear();
+        
+        for (int trackerId = 0; trackerId < Handler.TrackerCount; trackerId++)
+        {
+            var settings = GetOrCreateTrackerSettings(trackerId);
+            
+            // Skip disabled trackers
+            if (settings.Role == TrackerRole.Disabled) continue;
+            
+            var jointIndex = TrackedJoints.Count;
+            _jointToTrackerMap[jointIndex] = trackerId;
+            
+            TrackedJoints.Add(new TrackedJoint
+            {
+                Name = $"owoTrack {trackerId} ({RoleDisplayNames[settings.Role]})",
+                Role = RoleToJointType(settings.Role)
+            });
+            
+            // Initialize handler with saved calibration
+            Handler.SetGlobalRotation(trackerId, settings.GlobalRotation.ToWin());
+            Handler.SetLocalRotation(trackerId, settings.LocalRotation.ToWin());
+        }
+        
+        // Update UI if needed
+        RebuildTrackerSettingsUI();
     }
 
     public void OnLoad()
@@ -228,7 +288,29 @@ public class OwoTrack : ITrackingDevice
         // Tell the handler to initialize
         if (!PluginLoaded) Handler.OnLoad();
 
-        // Settings UI setup
+        // Build the settings UI
+        BuildSettingsInterface();
+
+        // Mark the plugin as loaded
+        PluginLoaded = true;
+        UpdateSettingsInterface(true);
+    }
+
+    private StackPanel TrackersPanel { get; set; }
+    private List<TrackerUIRow> _trackerUIRows = new();
+
+    private class TrackerUIRow
+    {
+        public int TrackerId { get; set; }
+        public StackPanel Container { get; set; }
+        public TextBlock Label { get; set; }
+        public ComboBox RoleSelector { get; set; }
+        public Button CalibrateButton { get; set; }
+        public NumberBox HeightBox { get; set; }
+    }
+
+    private void BuildSettingsInterface()
+    {
         IpTextBlock = new TextBlock
         {
             Text = Handler.IP.Length > 1 // Format as list if found multiple IPs!
@@ -255,32 +337,6 @@ public class OwoTrack : ITrackingDevice
             Margin = new Thickness(3), Opacity = 0.5
         };
 
-        // Tracker selector
-        TrackerSelectorLabel = new TextBlock
-        {
-            Text = "Select Tracker:",
-            Margin = new Thickness(3), Opacity = 0.5
-        };
-        TrackerSelectorComboBox = new ComboBox
-        {
-            Margin = new Thickness { Left = 5 },
-            MinWidth = 150
-        };
-        TrackerSelectorComboBox.SelectionChanged += (s, e) =>
-        {
-            if (TrackerSelectorComboBox.SelectedIndex >= 0)
-            {
-                _selectedTrackerId = TrackerSelectorComboBox.SelectedIndex;
-                UpdateSelectedTrackerUI();
-            }
-        };
-
-        HipHeightLabelTextBlock = new TextBlock
-        {
-            Text = Host.RequestLocalizedString("/Plugins/OWO/Settings/Labels/HipHeight"),
-            Margin = new Thickness(3), Opacity = 0.5
-        };
-
         MessageTextBlock = new TextBlock
         {
             Text = Host.RequestLocalizedString("/Plugins/OWO/Settings/Notices/NotStarted"),
@@ -288,23 +344,10 @@ public class OwoTrack : ITrackingDevice
         };
         CalibrationTextBlock = new TextBlock { Visibility = Visibility.Collapsed };
 
-        CalibrateForwardButton = new Button
+        TrackersPanel = new StackPanel
         {
-            FontWeight = FontWeights.SemiBold,
-            Content = Host.RequestLocalizedString("/Plugins/OWO/Settings/Buttons/Calibration/Forward"),
-            Margin = new Thickness(3), IsEnabled = false, Visibility = Visibility.Collapsed
-        };
-        CalibrateDownButton = new Button
-        {
-            FontWeight = FontWeights.SemiBold,
-            Content = Host.RequestLocalizedString("/Plugins/OWO/Settings/Buttons/Calibration/Down"),
-            Margin = new Thickness(3), IsEnabled = false, Visibility = Visibility.Collapsed
-        };
-
-        HipHeightNumberBox = new NumberBox
-        {
-            Value = 75, Margin = new Thickness { Left = 5 },
-            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline
+            Orientation = Orientation.Vertical,
+            Margin = new Thickness { Top = 10, Bottom = 10 }
         };
 
         InterfaceRoot = new Page
@@ -325,77 +368,192 @@ public class OwoTrack : ITrackingDevice
                         Children = { PortLabelTextBlock, PortTextBlock },
                         Margin = new Thickness { Bottom = 10 }
                     },
-                    new StackPanel
+                    new TextBlock
                     {
-                        Orientation = Orientation.Horizontal,
-                        Children = { TrackerSelectorLabel, TrackerSelectorComboBox },
-                        Margin = new Thickness { Bottom = 10 }
+                        Text = "Connected Devices:",
+                        FontWeight = FontWeights.SemiBold,
+                        Margin = new Thickness(3)
                     },
-                    new StackPanel
-                    {
-                        Orientation = Orientation.Horizontal,
-                        Children = { HipHeightLabelTextBlock, HipHeightNumberBox },
-                        Margin = new Thickness { Bottom = 15 }
-                    },
+                    TrackersPanel,
                     MessageTextBlock,
-                    new StackPanel
-                    {
-                        Orientation = Orientation.Horizontal,
-                        Children = { CalibrateForwardButton, CalibrateDownButton },
-                        Margin = new Thickness { Bottom = 15 }
-                    },
                     CalibrationTextBlock
                 }
             }
         };
+    }
 
-        // Setup signals
-        HipHeightNumberBox.ValueChanged += (sender, _) =>
+    private void RebuildTrackerSettingsUI()
+    {
+        if (TrackersPanel == null) return;
+        
+        TrackersPanel.Children.Clear();
+        _trackerUIRows.Clear();
+        
+        if (Handler.TrackerCount == 0)
         {
-            // Try to fix the recovered height offset value
-            if (double.IsNaN(sender.Value)) sender.Value = 75;
-            if (sender.Value is < 60 or > 90)
+            TrackersPanel.Children.Add(new TextBlock
+            {
+                Text = "No devices connected. Open owoTrack on your phone and connect to this IP.",
+                Opacity = 0.5,
+                Margin = new Thickness(3),
+                TextWrapping = TextWrapping.Wrap
+            });
+            return;
+        }
+        
+        for (int trackerId = 0; trackerId < Handler.TrackerCount; trackerId++)
+        {
+            var settings = GetOrCreateTrackerSettings(trackerId);
+            var tid = trackerId; // Capture for lambda
+            
+            var label = new TextBlock
+            {
+                Text = $"owoTrack {trackerId}:",
+                VerticalAlignment = VerticalAlignment.Center,
+                Width = 100,
+                Margin = new Thickness(3)
+            };
+            
+            var roleSelector = new ComboBox
+            {
+                MinWidth = 120,
+                Margin = new Thickness { Right = 10 }
+            };
+            foreach (var role in Enum.GetValues<TrackerRole>())
+            {
+                roleSelector.Items.Add(RoleDisplayNames[role]);
+            }
+            roleSelector.SelectedIndex = (int)settings.Role;
+            roleSelector.SelectionChanged += (s, e) =>
+            {
+                var newRole = (TrackerRole)roleSelector.SelectedIndex;
+                var trackerSettings = GetOrCreateTrackerSettings(tid);
+                trackerSettings.Role = newRole;
+                SaveTrackerSettings(tid);
+                RebuildTrackedJoints();
+                Host.PlayAppSound(SoundType.Invoke);
+            };
+            
+            var calibrateButton = new Button
+            {
+                Content = "Calibrate",
+                FontWeight = FontWeights.SemiBold,
+                Margin = new Thickness { Right = 10 }
+            };
+            calibrateButton.Click += async (s, e) => await CalibrateTrackerAsync(tid);
+            
+            var heightLabel = new TextBlock
+            {
+                Text = "Height:",
+                VerticalAlignment = VerticalAlignment.Center,
+                Opacity = 0.7,
+                Margin = new Thickness { Right = 5 }
+            };
+            
+            var heightBox = new NumberBox
+            {
+                Value = settings.TrackerHeightOffset,
+                Minimum = 60,
+                Maximum = 90,
+                SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
+                Width = 80
+            };
+            heightBox.ValueChanged += (sender, _) =>
+            {
+                if (double.IsNaN(sender.Value)) sender.Value = 75;
                 sender.Value = Math.Clamp(sender.Value, 60, 90);
-
-            var settings = GetOrCreateTrackerSettings(_selectedTrackerId);
-            settings.TrackerHeightOffset = (uint)sender.Value;
-            SaveTrackerSettings(_selectedTrackerId);
-            Host.PlayAppSound(SoundType.Invoke);
-        };
-
-        CalibrateForwardButton.Click += CalibrateForwardButton_Click;
-        CalibrateDownButton.Click += CalibrateDownButton_Click;
-
-        // Mark the plugin as loaded
-        PluginLoaded = true;
-        UpdateSettingsInterface(true);
-    }
-
-    private void UpdateTrackerSelector()
-    {
-        if (TrackerSelectorComboBox == null) return;
-        
-        TrackerSelectorComboBox.Items.Clear();
-        for (int i = 0; i < Handler.TrackerCount; i++)
-        {
-            TrackerSelectorComboBox.Items.Add($"Tracker {i}");
-        }
-        
-        if (TrackerSelectorComboBox.Items.Count > 0 && TrackerSelectorComboBox.SelectedIndex < 0)
-        {
-            TrackerSelectorComboBox.SelectedIndex = 0;
+                
+                var trackerSettings = GetOrCreateTrackerSettings(tid);
+                trackerSettings.TrackerHeightOffset = (uint)sender.Value;
+                SaveTrackerSettings(tid);
+                Host.PlayAppSound(SoundType.Invoke);
+            };
+            
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Margin = new Thickness { Bottom = 8 },
+                Children = { label, roleSelector, calibrateButton, heightLabel, heightBox }
+            };
+            
+            TrackersPanel.Children.Add(row);
+            _trackerUIRows.Add(new TrackerUIRow
+            {
+                TrackerId = trackerId,
+                Container = row,
+                Label = label,
+                RoleSelector = roleSelector,
+                CalibrateButton = calibrateButton,
+                HeightBox = heightBox
+            });
         }
     }
 
-    private void UpdateSelectedTrackerUI()
+    private async Task CalibrateTrackerAsync(int trackerId)
     {
-        if (!PluginLoaded) return;
-        
-        var settings = GetOrCreateTrackerSettings(_selectedTrackerId);
-        if (HipHeightNumberBox != null)
+        if (!Handler.IsInitialized || CalibrationPending) return;
+        if (trackerId < 0 || trackerId >= Handler.TrackerCount) return;
+
+        var trackerRow = _trackerUIRows.FirstOrDefault(r => r.TrackerId == trackerId);
+        if (trackerRow == null) return;
+
+        // Block all calibrate buttons
+        CalibrationPending = true;
+        foreach (var row in _trackerUIRows)
+            row.CalibrateButton.IsEnabled = false;
+
+        // Setup calibration UI
+        CalibrationTextBlock.Visibility = Visibility.Visible;
+        CalibrationTextBlock.Text = $"Calibrating owoTrack {trackerId}: Face forward in 7 seconds...";
+        Host.PlayAppSound(SoundType.CalibrationStart);
+
+        // Wait for user to get ready
+        await Task.Delay(7000);
+        if (!Handler.IsInitialized)
         {
-            HipHeightNumberBox.Value = settings.TrackerHeightOffset;
+            Handler.SetCalibratingForward(trackerId, false);
+            CalibrationTextBlock.Visibility = Visibility.Collapsed;
+            Host.PlayAppSound(SoundType.CalibrationAborted);
+            CalibrationPending = false;
+            foreach (var row in _trackerUIRows)
+                row.CalibrateButton.IsEnabled = true;
+            return;
         }
+
+        // Forward calibration
+        Handler.SetCalibratingForward(trackerId, true);
+        CalibrationTextBlock.Text = $"Calibrating owoTrack {trackerId}: Hold still...";
+        Host.PlayAppSound(SoundType.CalibrationPointCaptured);
+
+        await Task.Delay(4000);
+        Handler.SetCalibratingForward(trackerId, false);
+
+        // Down calibration
+        CalibrationTextBlock.Text = $"Calibrating owoTrack {trackerId}: Now look down...";
+        Host.PlayAppSound(SoundType.CalibrationPointCaptured);
+
+        await Task.Delay(3000);
+        Handler.SetCalibratingDown(trackerId, true);
+        CalibrationTextBlock.Text = $"Calibrating owoTrack {trackerId}: Hold still...";
+
+        await Task.Delay(3000);
+        Handler.SetCalibratingDown(trackerId, false);
+        
+        Host.PlayAppSound(SoundType.CalibrationComplete);
+        CalibrationTextBlock.Visibility = Visibility.Collapsed;
+
+        // Save calibration
+        var settings = GetOrCreateTrackerSettings(trackerId);
+        settings.GlobalRotation = Handler.GetGlobalRotation(trackerId).ToNet();
+        settings.LocalRotation = Handler.GetLocalRotation(trackerId).ToNet();
+        SaveTrackerSettings(trackerId);
+
+        // Unblock buttons
+        CalibrationPending = false;
+        foreach (var row in _trackerUIRows)
+            row.CalibrateButton.IsEnabled = true;
+
+        UpdateSettingsInterface();
     }
 
     public void Initialize()
@@ -452,14 +610,16 @@ public class OwoTrack : ITrackingDevice
         if (!PluginLoaded || !Handler.IsInitialized ||
             Handler.StatusResult != (int)HandlerStatus.ServiceSuccess) return;
 
-        // Update poses for all connected trackers
-        for (int i = 0; i < Handler.TrackerCount && i < TrackedJoints.Count; i++)
+        // Update poses for all enabled trackers (mapped to joints)
+        for (int jointIndex = 0; jointIndex < TrackedJoints.Count; jointIndex++)
         {
-            var trackerOffset = GetTrackerOffset(i);
+            if (!_jointToTrackerMap.TryGetValue(jointIndex, out var trackerId)) continue;
+            
+            var trackerOffset = GetTrackerOffset(trackerId);
             
             // Get the computed pose for this tracker
             var pose = Handler.CalculatePoseForTracker(
-                i,
+                trackerId,
                 new Pose
                 {
                     Position = Host.HmdPose.Position.ToWin(),
@@ -471,163 +631,44 @@ public class OwoTrack : ITrackingDevice
                 trackerOffset.ToWin()
             );
 
-            // Update this tracker's pose
-            TrackedJoints[i].Position = pose.Position.ToNet();
-            TrackedJoints[i].Orientation = pose.Orientation.ToNet();
+            // Update this joint's pose
+            TrackedJoints[jointIndex].Position = pose.Position.ToNet();
+            TrackedJoints[jointIndex].Orientation = pose.Orientation.ToNet();
         }
     }
 
     public void SignalJoint(int jointId)
     {
         // Send a buzz signal to the corresponding tracker
-        if (jointId >= 0 && jointId < Handler.TrackerCount)
+        if (_jointToTrackerMap.TryGetValue(jointId, out var trackerId))
         {
-            Handler.SignalTracker(jointId);
+            Handler.SignalTracker(trackerId);
         }
     }
 
-    // "Full Calibration"
-    private async void CalibrateForwardButton_Click(object sender, RoutedEventArgs e)
+    private void UpdateSettingsInterface(bool forceRefresh = false)
     {
-        if (!Handler.IsInitialized || CalibrationPending) return; // Sanity check
-        if (_selectedTrackerId < 0 || _selectedTrackerId >= Handler.TrackerCount) return;
+        // That's all if the server is failing!
+        if (!PluginLoaded) return;
 
-        // Block next clicks
-        CalibrateForwardButton.IsEnabled = false;
-        CalibrateDownButton.IsEnabled = false;
-        CalibrationPending = true;
+        // Check if we've got anything to do here
+        if (!forceRefresh && _statusBackup == Handler.StatusResult) return;
 
-        // Setup calibration UI
-        CalibrationTextBlock.Visibility = Visibility.Visible;
-        CalibrationTextBlock.Text = Host.RequestLocalizedString("/Plugins/OWO/Settings/Instructions/Forward");
-        Host.PlayAppSound(SoundType.CalibrationStart);
-
-        // Wait a bit
-        await Task.Delay(7000);
-        if (!Handler.IsInitialized)
+        // Rebuild tracker UI if needed
+        if (_lastTrackerCount != Handler.TrackerCount || forceRefresh)
         {
-            Handler.SetCalibratingForward(_selectedTrackerId, false);
-            CalibrationTextBlock.Visibility = Visibility.Collapsed;
-            Host.PlayAppSound(SoundType.CalibrationAborted);
-            return; // Sanity check, abort
+            RebuildTrackerSettingsUI();
         }
-
-        // Begin calibration
-        Handler.SetCalibratingForward(_selectedTrackerId, true);
-        CalibrationTextBlock.Text = Host.RequestLocalizedString("/Plugins/OWO/Settings/Notices/Still");
-        Host.PlayAppSound(SoundType.CalibrationPointCaptured);
-
-        await Task.Delay(4000); // Wait a bit
-        Host.PlayAppSound(SoundType.CalibrationComplete);
-
-        // End calibration
-        Handler.SetCalibratingForward(_selectedTrackerId, false);
-        CalibrationTextBlock.Visibility = Visibility.Collapsed;
-
-        CalibrateForwardButton.IsEnabled = true;
-        CalibrateDownButton.IsEnabled = true;
-        CalibrationPending = false;
-
-        // Copy and save settings
-        var settings = GetOrCreateTrackerSettings(_selectedTrackerId);
-        settings.GlobalRotation = Handler.GetGlobalRotation(_selectedTrackerId).ToNet();
-        settings.LocalRotation = Handler.GetLocalRotation(_selectedTrackerId).ToNet();
-        SaveTrackerSettings(_selectedTrackerId);
-
-        // Update the UI
-        UpdateSettingsInterface();
-    }
-
-    // "Down Calibration"
-    private async void CalibrateDownButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (!Handler.IsInitialized || CalibrationPending) return; // Sanity check
-        if (_selectedTrackerId < 0 || _selectedTrackerId >= Handler.TrackerCount) return;
-
-        // Block next clicks
-        CalibrateForwardButton.IsEnabled = false;
-        CalibrateDownButton.IsEnabled = false;
-        CalibrationPending = true;
-
-        // Setup calibration UI
-        CalibrationTextBlock.Visibility = Visibility.Visible;
-        CalibrationTextBlock.Text = Host.RequestLocalizedString("/Plugins/OWO/Settings/Instructions/Down");
-        Host.PlayAppSound(SoundType.CalibrationStart);
-
-        // Wait a bit
-        await Task.Delay(7000);
-        if (!Handler.IsInitialized)
-        {
-            Handler.SetCalibratingDown(_selectedTrackerId, false);
-            CalibrationTextBlock.Visibility = Visibility.Collapsed;
-            Host.PlayAppSound(SoundType.CalibrationAborted);
-            return; // Sanity check, abort
-        }
-
-        // Begin calibration
-        Handler.SetCalibratingDown(_selectedTrackerId, true);
-        CalibrationTextBlock.Text = Host.RequestLocalizedString("/Plugins/OWO/Settings/Notices/Still");
-        Host.PlayAppSound(SoundType.CalibrationPointCaptured);
-
-        await Task.Delay(4000); // Wait a bit
-        Host.PlayAppSound(SoundType.CalibrationComplete);
-
-        // End calibration
-        Handler.SetCalibratingDown(_selectedTrackerId, false);
-        CalibrationTextBlock.Visibility = Visibility.Collapsed;
-
-        CalibrateForwardButton.IsEnabled = true;
-        CalibrateDownButton.IsEnabled = true;
-        CalibrationPending = false;
-
-        // Copy and save settings
-        var settings = GetOrCreateTrackerSettings(_selectedTrackerId);
-        settings.GlobalRotation = Handler.GetGlobalRotation(_selectedTrackerId).ToNet();
-        settings.LocalRotation = Handler.GetLocalRotation(_selectedTrackerId).ToNet();
-        SaveTrackerSettings(_selectedTrackerId);
-
-        // Update the UI
-        UpdateSettingsInterface();
-    }
-
-    private void UpdateSettingsInterface(bool force = false)
-    {
-        if (!PluginLoaded || !Handler.IsInitialized ||
-            Handler.GetCalibratingForward(_selectedTrackerId) || Handler.GetCalibratingDown(_selectedTrackerId)) return;
-
-        // Nothing's changed, no need to update
-        if (!force && Handler.StatusResult == _statusBackup) return;
-
-        // Update tracker selector if needed
-        UpdateTrackerSelector();
 
         // Update the settings UI
         if (Handler.StatusResult == (int)HandlerStatus.ServiceSuccess)
         {
             MessageTextBlock.Visibility = Visibility.Collapsed;
-
-            CalibrateForwardButton.Visibility = Visibility.Visible;
-            CalibrateDownButton.Visibility = Visibility.Visible;
-
-            if (!CalibrationPending)
-            {
-                CalibrateForwardButton.IsEnabled = Handler.TrackerCount > 0;
-                CalibrateDownButton.IsEnabled = Handler.TrackerCount > 0;
-            }
         }
         else
         {
             MessageTextBlock.Visibility = Visibility.Visible;
             MessageTextBlock.Text = Host.RequestLocalizedString("/Plugins/OWO/Settings/Notices/NotConnected");
-
-            CalibrateForwardButton.Visibility = Visibility.Collapsed;
-            CalibrateDownButton.Visibility = Visibility.Collapsed;
-
-            if (!CalibrationPending)
-            {
-                CalibrateForwardButton.IsEnabled = false;
-                CalibrateDownButton.IsEnabled = false;
-            }
         }
 
         // Cache the status
@@ -670,16 +711,8 @@ public class OwoTrack : ITrackingDevice
     private TextBlock IpLabelTextBlock { get; set; }
     private TextBlock PortTextBlock { get; set; }
     private TextBlock PortLabelTextBlock { get; set; }
-    private TextBlock HipHeightLabelTextBlock { get; set; }
     private TextBlock MessageTextBlock { get; set; }
     private TextBlock CalibrationTextBlock { get; set; }
-    private TextBlock TrackerSelectorLabel { get; set; }
-
-    private Button CalibrateForwardButton { get; set; }
-    private Button CalibrateDownButton { get; set; }
-
-    private NumberBox HipHeightNumberBox { get; set; }
-    private ComboBox TrackerSelectorComboBox { get; set; }
 
     #endregion
 }
@@ -712,7 +745,7 @@ internal class SetupData : ICoreSetupData
     public object PluginIcon => new PathIcon
     {
         Data = (Geometry)XamlBindingHelper.ConvertValue(typeof(Geometry),
-            "M34.86,0A34.76,34.76,0,1,0,69.51,34.9,34.74,34.74,0,0,0,34.86,0ZM14.33,18.66A25.12,25.12,0,0,1,29.22,9.31c1.81-.39,3.68-.53,5-.7a28.81,28.81,0,0,1,11,2.27,1.45,1.45,0,0,1,1,1.45q.3,4.06.75,8.11c.09.79-.21.82-.79.69-.36-.08-.72-.16-1.08-.26-2-.59-1.88-.22-1.82-2.46,0-1.38-.42-1.79-1.73-1.64s-2.87.17-4.30.34c-.28,0-.59.43-.76.72a1.43,1.43,0,0,0,0,.8c.12,1.07-.07,1.62-1.41,1.84a31.91,31.91,0,0,0-16.08,7.77c-.56.48-.86.48-1.18-.2-1.22-2.62-2.5-5.21-3.67-7.85A1.86,1.86,0,0,1,14.33,18.66ZM24.91,58.73l-.09-.14h-.05v0c-2.26-.16-3.92-1.62-5.56-2.89A25.59,25.59,0,0,1,8.92,38.08a27.88,27.88,0,0,1,.87-10.71c.39.68.71,1.18,1,1.71q7,14.51,14,29a1.27,1.27,0,0,1,.05.44h0l0,0,.09,0S24.91,58.7,24.91,58.73Zm21.17-.43a29.5,29.5,0,0,1-8.72,2.43c-.18,0-.66-.57-.65-.86,0-1.86.16-3.72.28-5.58s.28-3.82.43-5.73c.1-1.25.22-2.5.34-4a4.44,4.44,0,0,1,.75.64c2.65,3.87,5.27,7.76,8,11.6C47,57.61,47,57.89,46.08,58.3Zm2.79-9.88C45.58,43.62,42.25,38.85,39,34c-.8-1.2-1.55-1.74-3-1.06a13.43,13.43,0,0,1-2.29.67c-2.05.56-2.14.68-2.27,2.76Q31,44.77,30.45,53.13a5.59,5.59,0,0,1-.29.83l-4.82-10c-1.32-2.75-2.58-5.52-4-8.23a1.65,1.65,0,0,1,.45-2.32,27.53,27.53,0,0,1,14-7.25c.83-.16,1.23.05,1.14.95,0,.32,0,.64,0,1,0,1.08.12,1.69,1.54,1.34a18.06,18.06,0,0,1,4.29-.32c.94,0,1.06-.46,1-1.2-.18-1.24.42-1.31,1.42-1,2.29.66,2.45.86,2.67,4.06.25,3.62.48,7.23.77,10.84.18,2.2.46,4.4.69,6.59Zm7.59.79l-.4-.09Q54.69,33,53.31,16.94c2.24,1,5.91,7.4,6.84,11.78A26.07,26.07,0,0,1,56.46,49.21Z")
+            "M34.86,0A34.76,34.76,0,1,0,69.51,34.9,34.74,34.74,0,0,0,34.86,0ZM14.33,18.66A25.12,25.12,0,0,1,29.22,9.31c1.81-.39,3.68-.53,5-.7a28.81,28.81,0,0,1,11,2.27,1.45,1.45,0,0,1,1,1.45q.3,4.06.75,8.11c.09.79-.21.82-.79.69-.36-.08-.72-.16-1.08-.26-2-.59-1.88-.22-1.82-2.46,0-1.38-.42-1.79-1.73-1.64s-2.87.17-4.30.34c-.28,0-.59.43-.76.72a1.43,1.43,0,0,0,0,.8c.12,1.07-.07,1.62-1.41,1.84a31.91,31.91,0,0,0-16.08,7.77c-.56.48-.86.48-1.18-.2-1.22-2.62-2.50-5.21-3.67-7.85A1.86,1.86,0,0,1,14.33,18.66ZM24.91,58.73l-.09-.14h-.05v0c-2.26-.16-3.92-1.62-5.56-2.89A25.59,25.59,0,0,1,8.92,38.08a27.88,27.88,0,0,1,.87-10.71c.39.68.71,1.18,1,1.71q7,14.51,14,29a1.27,1.27,0,0,1,.05.44h0l0,0,.09,0S24.91,58.70,24.91,58.73Zm21.17-.43a29.5,29.5,0,0,1-8.72,2.43c-.18,0-.66-.57-.65-.86,0-1.86.16-3.72.28-5.58s.28-3.82.43-5.73c.10-1.25.22-2.50.34-4a4.44,4.44,0,0,1,.75.64c2.65,3.87,5.27,7.76,8,11.60C47,57.61,47,57.89,46.08,58.30Zm2.79-9.88C45.58,43.62,42.25,38.85,39,34c-.8-1.2-1.55-1.74-3-1.06a13.43,13.43,0,0,1-2.29.67c-2.05.56-2.14.68-2.27,2.76Q31,44.77,30.45,53.13a5.59,5.59,0,0,1-.29.83l-4.82-10c-1.32-2.75-2.58-5.52-4-8.23a1.65,1.65,0,0,1,.45-2.32,27.53,27.53,0,0,1,14-7.25c.83-.16,1.23.05,1.14.95,0,.32,0,.64,0,1,0,1.08.12,1.69,1.54,1.34a18.06,18.06,0,0,1,4.29-.32c.94,0,1.06-.46,1-1.2-.18-1.24.42-1.31,1.42-1,2.29.66,2.45.86,2.67,4.06.25,3.62.48,7.23.77,10.84.18,2.20.46,4.40.69,6.59Zm7.59.79l-.4-.09Q54.69,33,53.31,16.94c2.24,1,5.91,7.40,6.84,11.78A26.07,26.07,0,0,1,56.46,49.21Z")
     };
 
     public string GroupName => string.Empty;
