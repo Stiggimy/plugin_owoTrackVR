@@ -90,8 +90,8 @@ public class OwoTrack : ITrackingDevice
     {
         return role switch
         {
-            TrackerRole.Waist => TrackedJointType.JointSpineBase,
-            TrackerRole.Chest => TrackedJointType.JointSpineMid,
+            TrackerRole.Waist => TrackedJointType.JointSpineWaist,
+            TrackerRole.Chest => TrackedJointType.JointSpineMiddle,
             TrackerRole.LeftFoot => TrackedJointType.JointFootLeft,
             TrackerRole.RightFoot => TrackedJointType.JointFootRight,
             TrackerRole.LeftKnee => TrackedJointType.JointKneeLeft,
